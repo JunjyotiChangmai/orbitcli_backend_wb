@@ -1,6 +1,8 @@
 const pool = require("../db");
 const jwt = require("jsonwebtoken");
+const axios = require("axios");
 
+// to store user acceskey
 async function storeUserToken(req, res) {
     try {
         const { accessKey } = req.body;
@@ -39,6 +41,50 @@ async function storeUserToken(req, res) {
     }
 }
 
+// to varify the given api key is real or not
+async function validateLLMKey(provider, apiKey) {
+    if (provider === "gemini" && !apiKey.startsWith("AIza")) {
+        return { valid: false, reason: "Invalid Gemini API key format" };
+    }
+
+    if (provider === "gpt" && !apiKey.startsWith("sk-")) {
+        return { valid: false, reason: "Invalid OpenAI API key format" };
+    }
+
+    if (provider === "claude" && !apiKey.startsWith("sk-ant-")) {
+        return { valid: false, reason: "Invalid Anthropic API key format" };
+    }
+
+    let url = "";
+    let headers = {};
+
+    if (provider === "gemini") {
+        url = `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`;
+        headers = {};
+    }
+
+    if (provider === "gpt") {
+        url = "https://api.openai.com/v1/models";
+        headers = { Authorization: `Bearer ${apiKey}` };
+    }
+
+    if (provider === "claude") {
+        url = "https://api.anthropic.com/v1/models";
+        headers = {
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01"
+        };
+    }
+
+    try {
+        await axios.get(url, { headers });
+        return { valid: true };
+    } catch (err) {
+        return { valid: false, reason: "Provider rejected API key" };
+    }
+}
+
+// to store LLM api key
 async function storeLLMKey(req, res) {
     try {
         const { provider, apiKey } = req.body;
@@ -48,13 +94,22 @@ async function storeLLMKey(req, res) {
             return res.status(400).json({ error: "Provider and API key are required" });
         }
 
+        const validation = await validateLLMKey(provider, apiKey);
+
+        if (!validation.valid) {
+            return res.status(400).json({
+                error: "Invalid API Key",
+                reason: validation.reason
+            });
+        }
+
         const result = await pool.query(
             "INSERT INTO llm_keys (user_id, provider, api_key) VALUES ($1, $2, $3) RETURNING *",
             [userId, provider, apiKey]
         );
 
-        res.status(201).json({
-            message: "LLM API key saved successfully",
+        return res.status(201).json({
+            message: "LLM API key validated & saved successfully",
             data: result.rows[0]
         });
 
@@ -65,6 +120,7 @@ async function storeLLMKey(req, res) {
 }
 
 
+// to validate the accesskey provided by the user is already present inside the database or not
 async function checkAccessKey(req, res) {
     try {
         const { accessKey } = req.body;
@@ -108,6 +164,7 @@ async function checkAccessKey(req, res) {
     }
 }
 
+// to get all LLM api keys of a particular user
 async function getLLMKeysForUser(req, res) {
     try {
         const userId = req.user.userId; // from JWT
